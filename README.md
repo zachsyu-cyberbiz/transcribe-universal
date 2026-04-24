@@ -64,7 +64,7 @@
 ### 更多特色
 
 - **跨平台** — Mac（Apple Silicon / Intel）、Windows、Linux 全支援
-- **4 種語音辨識引擎** — MLX Whisper（本地最快）、Groq（雲端免費）、faster-whisper、OpenAI Whisper
+- **4 種語音辨識引擎** — Groq（雲端免費，含註冊使用方式）、MLX Whisper、faster-whisper、OpenAI Whisper
 - **中文優化** — Whisper 輸出簡體字？自動幫你轉繁體
 - **斷點續傳** — 中斷可從上次進度繼續，不怕意外
 
