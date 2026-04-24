@@ -1,4 +1,6 @@
-# transcribe-universal — 安裝說明
+# transcribe-universal — 詳細技術文件
+
+> 快速開始請看 [根目錄 README](../README.md)。本文件為進階參考。
 
 版本：1.4.0 | 適用：Claude Code（Mac / Windows / Linux）
 
