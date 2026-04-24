@@ -20,6 +20,16 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from pathlib import Path
 
+# ── Load .env ───────────────────────────────────────────────────────
+
+_env_path = Path.home() / ".transcribe-universal" / ".env"
+if _env_path.exists():
+    for _line in _env_path.read_text().splitlines():
+        _line = _line.strip()
+        if _line and not _line.startswith("#") and "=" in _line:
+            _k, _v = _line.split("=", 1)
+            os.environ.setdefault(_k.strip(), _v.strip())
+
 # ── Config ──────────────────────────────────────────────────────────
 
 CONFIG_PATH = Path.home() / ".transcribe-universal" / "config.json"
@@ -135,6 +145,28 @@ class MLXBackend(TranscribeBackend):
 class GroqBackend(TranscribeBackend):
     name = "Groq API"
 
+    @staticmethod
+    def _retryable(error) -> bool:
+        """Return True if this Groq error is worth retrying."""
+        status = getattr(error, "status_code", None)
+        if status in (400, 401, 403, 404, 413):
+            return False  # permanent errors — retry won't help
+        if status in (429,) or (status and status >= 500):
+            return True   # rate limit or server error — wait and retry
+        return status is None  # network/connection errors are retryable
+
+    def _with_retry(self, call_fn):
+        """Call call_fn up to 3 times, retrying transient Groq errors."""
+        for attempt in range(3):
+            try:
+                return call_fn()
+            except Exception as e:
+                if not self._retryable(e) or attempt == 2:
+                    raise
+                wait = 2 ** attempt  # 1s, then 2s
+                print(f"   ⚠️  Groq 暫時無法回應，{wait} 秒後重試…（{attempt + 1}/2）")
+                time.sleep(wait)
+
     def transcribe(self, audio_path, prompt, language):
         from groq import Groq
 
@@ -144,19 +176,23 @@ class GroqBackend(TranscribeBackend):
         if file_size > GROQ_MAX_BYTES:
             return self._transcribe_chunked(client, audio_path, prompt, language)
 
-        with open(audio_path, "rb") as f:
-            result = client.audio.transcriptions.create(
-                file=(Path(audio_path).name, f.read()),
-                model=GROQ_MODEL,
-                prompt=prompt,
-                language=language,
-                response_format="verbose_json",
-                timestamp_granularities=["segment"],
-            )
-        return [
-            {"start": s.start, "end": s.end, "text": s.text}
-            for s in (result.segments or [])
-        ]
+        def _call():
+            with open(audio_path, "rb") as f:
+                result = client.audio.transcriptions.create(
+                    file=(Path(audio_path).name, f.read()),
+                    model=GROQ_MODEL,
+                    prompt=prompt,
+                    language=language,
+                    response_format="verbose_json",
+                    timestamp_granularities=["segment"],
+                )
+            def _seg(s):
+                if isinstance(s, dict):
+                    return {"start": s["start"], "end": s["end"], "text": s["text"]}
+                return {"start": s.start, "end": s.end, "text": s.text}
+            return [_seg(s) for s in (result.segments or [])]
+
+        return self._with_retry(_call)
 
     def _transcribe_chunked(self, client, audio_path, prompt, language):
         """Split audio into chunks and transcribe each."""
@@ -179,20 +215,22 @@ class GroqBackend(TranscribeBackend):
             chunk.export(str(tmp_path), format="mp3", bitrate="128k")
 
             try:
-                with open(tmp_path, "rb") as f:
-                    result = client.audio.transcriptions.create(
-                        file=(tmp_path.name, f.read()),
-                        model=GROQ_MODEL,
-                        prompt=prompt,
-                        language=language,
-                        response_format="verbose_json",
-                        timestamp_granularities=["segment"],
-                    )
+                def _call(tmp=tmp_path):
+                    with open(tmp, "rb") as f:
+                        return client.audio.transcriptions.create(
+                            file=(tmp.name, f.read()),
+                            model=GROQ_MODEL,
+                            prompt=prompt,
+                            language=language,
+                            response_format="verbose_json",
+                            timestamp_granularities=["segment"],
+                        )
+                result = self._with_retry(_call)
                 for s in result.segments or []:
                     all_segments.append({
-                        "start": s.start + time_offset,
-                        "end": s.end + time_offset,
-                        "text": s.text,
+                        "start": (s["start"] if isinstance(s, dict) else s.start) + time_offset,
+                        "end": (s["end"] if isinstance(s, dict) else s.end) + time_offset,
+                        "text": s["text"] if isinstance(s, dict) else s.text,
                     })
             finally:
                 tmp_path.unlink(missing_ok=True)
@@ -212,7 +250,11 @@ class FasterWhisperBackend(TranscribeBackend):
         segs, _info = model.transcribe(
             audio_path, language=language, initial_prompt=prompt
         )
-        return [{"start": s.start, "end": s.end, "text": s.text} for s in segs]
+        def _seg(s):
+            if isinstance(s, dict):
+                return {"start": s["start"], "end": s["end"], "text": s["text"]}
+            return {"start": s.start, "end": s.end, "text": s.text}
+        return [_seg(s) for s in segs]
 
 
 class OpenAIWhisperBackend(TranscribeBackend):
@@ -239,10 +281,35 @@ BACKENDS = {
 
 
 def detect_backend(config):
-    """Return the best available backend, respecting config preference."""
+    """Return the best available backend, respecting config preference with fallback."""
     preferred = config.get("backend", "")
-    if preferred and preferred in BACKENDS:
-        return BACKENDS[preferred]()
+    fallback = config.get("fallback_backend", "")
+
+    def try_backend(name):
+        if name not in BACKENDS:
+            return None
+        try:
+            backend = BACKENDS[name]()
+            # Verify groq import is available before committing
+            if name == "groq":
+                import groq  # noqa: F401
+            elif name == "mlx":
+                import mlx_whisper  # noqa: F401
+            elif name == "faster-whisper":
+                import faster_whisper  # noqa: F401
+            return backend
+        except (ImportError, Exception):
+            return None
+
+    if preferred:
+        backend = try_backend(preferred)
+        if backend:
+            return backend
+        if fallback:
+            print(f"⚠️  {preferred} 無法使用，切換到 fallback：{fallback}")
+            backend = try_backend(fallback)
+            if backend:
+                return backend
 
     # Auto-detect priority order
     import platform as _platform
@@ -278,6 +345,28 @@ def detect_backend(config):
     sys.exit(1)
 
 
+# ── Recovery helpers ────────────────────────────────────────────────
+
+def _ask_recovery(audio_path, error):
+    """Interactive prompt when all backends fail. Returns 'retry', 'skip', or 'quit'."""
+    print(f"\n❌ 所有語音辨識方式都失敗了：{Path(audio_path).name}")
+    print(f"   錯誤：{error}")
+    print(f"\n💡 可能原因：")
+    print(f"   • Groq API key 無效或額度已用完")
+    print(f"   • 網路連線不穩定")
+    print(f"   • 音檔格式不受支援")
+    print(f"\n選擇：[r] 重試 Groq  [s] 跳過此檔  [q] 全部結束")
+    try:
+        choice = input("→ ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return "quit"
+    if choice == "r":
+        return "retry"
+    elif choice == "s":
+        return "skip"
+    return "quit"
+
+
 # ── Helpers ─────────────────────────────────────────────────────────
 
 def sanitize_dirname(name):
@@ -289,6 +378,15 @@ def format_timestamp(seconds):
     h, remainder = divmod(int(seconds), 3600)
     m, s = divmod(remainder, 60)
     return f"{h:02d}:{m:02d}:{s:02d}" if h > 0 else f"{m:02d}:{s:02d}"
+
+
+def normalize_backend_language(language):
+    """Map zh-tw / zh-hant variants to 'zh' for Whisper backend compatibility.
+    OpenCC handles the actual Simplified→Traditional conversion in post-processing.
+    """
+    if language in ("zh-tw", "zh-hant", "zh-hk"):
+        return "zh"
+    return language
 
 
 def build_prompt(context=None):
@@ -313,6 +411,7 @@ def open_file_cross_platform(filepath):
 
 def transcribe_files(files, name, context, language, config, force=False):
     backend = detect_backend(config)
+    fallback_name = config.get("fallback_backend", "")
     replacements = load_replacements(config)
 
     output_base = config.get("output_base", "./transcripts")
@@ -355,6 +454,7 @@ def transcribe_files(files, name, context, language, config, force=False):
 
     start_time = time.time()
     prompt = build_prompt(context)
+    backend_language = normalize_backend_language(language)  # zh-tw → zh for Whisper
 
     # Transcribe each file, merge segments
     all_segments = []
@@ -366,7 +466,36 @@ def transcribe_files(files, name, context, language, config, force=False):
             file_boundaries.append((len(all_segments), Path(audio_path).name))
             print(f"   ▶ 檔案 {file_idx + 1}/{len(files)}: {Path(audio_path).name}")
 
-        segments = backend.transcribe(audio_path, prompt, language)
+        while True:
+            try:
+                segments = backend.transcribe(audio_path, prompt, backend_language)
+                break
+            except Exception as e:
+                # Try fallback backend if available and not already on it
+                if fallback_name and fallback_name in BACKENDS:
+                    fallback_cls = BACKENDS[fallback_name]
+                    if not isinstance(backend, fallback_cls):
+                        print(f"\n⚠️  {backend.name} 轉錄失敗：{e}")
+                        print(f"   切換到 fallback：{fallback_name}")
+                        backend = fallback_cls()
+                        try:
+                            segments = backend.transcribe(audio_path, prompt, backend_language)
+                            break
+                        except Exception as e2:
+                            e = e2  # fall through to user prompt
+
+                # All backends exhausted — ask user what to do
+                action = _ask_recovery(audio_path, e)
+                if action == "retry":
+                    backend = GroqBackend()
+                    continue
+                elif action == "skip":
+                    segments = []
+                    break
+                else:
+                    print("已結束。")
+                    sys.exit(0)
+            # END while
 
         for seg in segments:
             seg["start"] += time_offset

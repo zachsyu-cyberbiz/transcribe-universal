@@ -1,12 +1,10 @@
 # transcribe-universal — 安裝說明
 
-版本：1.3.0 | 適用：Claude Code（Mac / Windows / Linux）
+版本：1.4.0 | 適用：Claude Code（Mac / Windows / Linux）
 
 ---
 
 ## 安裝步驟
-
-> **推薦方式**：在 Claude Code 輸入 `/skill-adopt`，貼上 `https://github.com/zachsyu-cyberbiz/transcribe-universal` 自動安裝。
 
 1. 把 `transcribe-universal/` 整個資料夾複製到 `~/.claude/skills/`
    ```bash
@@ -91,6 +89,7 @@ transcribe-universal/
 
 | 版本 | 變更摘要 |
 |------|---------|
+| 1.4.0 | Groq 加入 exponential backoff retry（最多 3 次，僅對 429/5xx/網路錯誤重試）；所有 backend 都失敗時顯示互動提示（r/s/q） |
 | 1.3.0 | 拆分 docs/ 目錄；加入 progress.json（resume 功能）；加入 version 欄位；加入 guard conditions |
 | 1.2.0 | 草稿存檔到 drafts/，自動開啟；LINE 草稿不含 Markdown 語法 |
 | 1.1.0 | OpenCC 改為必要元件；check-env 詳細化；新增 Step O1.5 |

@@ -1,9 +1,10 @@
 ---
 name: transcribe-universal
-version: "1.3.0"
+version: "1.4.0"
 description: 轉錄會議錄音並整理為會議紀錄，跨平台支援（Mac/Windows/Linux），自動識別後續工作項目。
 user_invocable: true
 ---
+
 # /transcribe-universal
 
 轉錄錄音檔 → 整理會議紀錄 → 主動識別後續工作 → 協助起草 follow-up 內容。
@@ -32,7 +33,6 @@ replacements: ~/.transcribe-universal/replacements.json
 ### Resume 邏輯
 
 若當前目錄有 `.raw/progress.json` 且 `last_completed_step < 8`：
-
 > 「上次的轉錄做到 Step {N}，要繼續嗎？還是重新開始？」
 
 使用者選繼續 → 從 Step N+1 開始，使用 progress.json 裡的參數。
@@ -48,14 +48,12 @@ python3 ~/.claude/skills/transcribe-universal/scripts/check-env.py
 ```
 
 解析 JSON 輸出，用自然語言告訴使用者：
-
 - 有 MLX 或 faster-whisper → 「你的電腦可以在本地跑語音辨識，速度快而且免費。要用這個方式嗎？」
-- 沒有本地模型 → 「建議設定 Groq — 免費、速度快。需要一組金鑰，不知道怎麼取得的話：<https://app.guideflow.com/player/np18zw3fek，取得後把金鑰貼給我就好。」>
+- 沒有本地模型 → 「建議設定 Groq — 免費、速度快。需要一組金鑰，不知道怎麼取得的話：https://app.guideflow.com/player/np18zw3fek，取得後把金鑰貼給我就好。」
 
 **O1.5 — 中文必備元件（僅限 zh / zh-tw）**
 
 若 `opencc.available == false` 且語言為中文：
-
 > 「有個小工具要裝一下，Whisper 有時候會輸出簡體字，這個會自動幫你轉繁體。」
 > `pip install opencc-python-reimplemented` → 若使用者同意，直接執行。
 
@@ -75,7 +73,32 @@ python3 ~/.claude/skills/transcribe-universal/scripts/check-env.py
 }
 ```
 
-Groq 使用者 → 引導設定 `GROQ_API_KEY` 環境變數（shell profile 或 .env）。
+**金鑰安全存法（Groq 使用者）：**
+
+絕對不要讓使用者把金鑰貼在對話裡。正確做法是 Claude 代為建立：
+- Claude 詢問：「你的 Groq 金鑰是什麼？（可以從剛才的連結取得）把金鑰傳給我，我幫你存在你的電腦裡，之後就不用再輸入了。」
+- Claude 將金鑰寫入以下路徑（依作業系統）：
+  - macOS / Linux：`~/.transcribe-universal/.env`
+  - Windows：`C:\Users\{使用者名稱}\.transcribe-universal\.env`
+- 檔案內容：`GROQ_API_KEY=gsk_xxxx`
+- 寫入後告訴使用者：「好了，金鑰已安全存在你的電腦裡，對話記錄裡不會留下金鑰。」
+- 腳本啟動時會自動讀取，不需要使用者做任何其他操作。
+
+**語言規範（Onboarding 全程適用）：**
+
+Claude 說話時不使用技術術語，一律改說：
+
+| 不說 | 改說 |
+|------|------|
+| backend | 語音辨識方式 |
+| API key | 金鑰 |
+| .env / env file | 金鑰檔（使用者看不到，Claude 幫他存） |
+| environment variable | 設定 |
+| shell profile / terminal | 不提，Claude 直接幫他處理 |
+| config.json | 設定（Claude 幫他寫，不說檔名） |
+| pip install | 安裝工具（「我幫你安裝一個小工具」）|
+
+對沒有技術背景的使用者：所有命令列操作由 Claude 透過 Bash 執行，使用者只需要回答問題和確認。
 
 **O3 — 建立糾錯字典（若不存在）**
 
@@ -101,7 +124,6 @@ Groq 使用者 → 引導設定 `GROQ_API_KEY` 環境變數（shell profile 或 
 一次問完（不要分開問）：
 
 > 「請提供以下資訊：
->
 > 1. 錄音檔在哪？（把檔案拖進來，或告訴我路徑）
 > 2. 有哪些人參加？（名字 + 角色，例如 "Nick — Canon 品牌經理"）
 > 3. 這是什麼類型的會議？（內部 / 客戶 / 講座 / 高層）
@@ -136,19 +158,15 @@ python3 ~/.claude/skills/transcribe-universal/scripts/transcribe-universal.py \
 
 ---
 
-### Step 3 — 名詞確認
+### Step 3 — 名詞掃描（靜默，不中斷流程）
 
-Guard：確認 `{output_dir}/.raw/raw-transcript.md` 存在。
+Guard：確認 `{output_dir}/raw-transcript.md` 存在。
 
-掃描可疑名詞（拼音相近、不在 replacements.json 的詞）。若有，一次列出：
+掃描可疑名詞（拼音相近、不在 replacements.json 的詞），**全程靜默，不停下來問，不修改任何 md 檔案**。
+將疑問詞存入 `.raw/suspect-terms.json`（使用者看不到 `.raw/` 資料夾）。
 
-> 「轉錄中有幾個不確定的名詞：
->
-> - "Cannon" → 是 Canon 嗎？
-> - "尼克" → 是 Nick 嗎？
->   確認後我會記住，下次不用再問。」
-
-確認後 → 更新 `replacements.json` + 在 raw-transcript.md 中套用修正。
+meeting-notes.md 保持乾淨，無任何標記。
+replacements.json 已套用的自動修正 + 不確定詞，在 Step 6 開啟檔案後統一顯示在**對話**裡（不在 md 裡）。
 若無可疑名詞 → 靜默跳過。
 
 ---
@@ -178,7 +196,6 @@ Guard：確認 raw-transcript.md 存在。
 ```
 
 根據 Step 1 的 `type` 選對應模板：
-
 - `internal`  → internal 模板
 - `external`  → external 模板
 - `lecture`   → lecture 模板
@@ -188,12 +205,10 @@ Guard：確認 raw-transcript.md 存在。
 讀取 raw-transcript.md + ocr.txt，填入模板內容（結論式 bullet points，不要口語化逐字稿）。
 
 生成：
-
 - `{output_dir}/meeting-notes.md` — 使用者會編輯的版本
 - `{output_dir}/.raw/meeting-notes-v0.md` — 備份，不要修改
 
 **背景靜默跑 Quality Harness：**
-
 - 幻聽標記 > 每 10 分鐘 2 次 → Step 6 加提醒
 - 簡體字殘留 > 0 → Step 6 加提醒
 - Action Items 缺負責人 → Step 6 加提醒
@@ -222,6 +237,19 @@ xdg-open "{output_dir}/meeting-notes.md"
 > ⚠️ 請特別確認「誰說了什麼」的部分，轉錄可能有誤。
 > 改完後存檔，回來跟我說「改好了」。
 
+若 replacements.json 有套用任何替換 → 完成訊息後加上：
+
+> ✏️ 有幾個詞根據學習紀錄自動修正了，請確認：
+> - "商社" → "商攝"（3 次）
+> - "Cycobus" → "CYBERBIZ"（5 次）
+> 有錯的話直接在檔案裡改就好。
+
+若 Step 3 另有偵測到不確定詞（超出 replacements.json 的範圍）→ 附加：
+
+> 🔍 另外有幾個詞我不確定，供你留意：
+> - "尼克" — 不確定是 Nick 還是其他人名
+> 如果有問題，改完後告訴我，我記起來，下次不會再問。
+
 若 Quality Harness 有警告 → 在此加入一行提醒。
 
 ---
@@ -237,22 +265,32 @@ xdg-open "{output_dir}/meeting-notes.md"
 
 Guard：確認 `{output_dir}/meeting-notes.md` 存在且使用者已確認 review 完成。
 
+**8pre — Diff + 學習**
+
+讀取 `.raw/meeting-notes-v0.md`（自動生成原版）和當前 `meeting-notes.md`（使用者修改版）做比對。
+以自然語言告知使用者改了什麼（不顯示 raw diff 格式），例如：
+
+> 「你改了 3 個地方：Action Items 補了負責人、刪了一段重複摘要、把『商社』改成了『商攝』。」
+
+若使用者修正了 `.raw/suspect-terms.json` 裡的不確定詞 → 靜默加入 `replacements.json`，不打擾。
+若無任何修改 → 靜默跳過，直接進 8a。
+
 **8a — 8 維度深度掃描**（讀最新的 meeting-notes.md）
 
-| # | 維度      | 識別目標                       |
-| - | --------- | ------------------------------ |
-| 1 | 決策已做  | 確認的結論、方向               |
-| 2 | 決策未做  | 被擱置、需更多資訊             |
-| 3 | 我方承諾  | 我方答應要做的事               |
-| 4 | 對方承諾  | 對方答應要做的事               |
-| 5 | 新資訊    | 首次出現的公司/產品/技術       |
-| 6 | 風險/疑慮 | 法律、財務、合規               |
-| 7 | 關係動態  | 態度轉變、政治考量（不寫書面） |
-| 8 | 隱含需求  | 弦外之音、未說出的期望         |
+| # | 維度 | 識別目標 |
+|---|------|---------|
+| 1 | 決策已做 | 確認的結論、方向 |
+| 2 | 決策未做 | 被擱置、需更多資訊 |
+| 3 | 我方承諾 | 我方答應要做的事 |
+| 4 | 對方承諾 | 對方答應要做的事 |
+| 5 | 新資訊 | 首次出現的公司/產品/技術 |
+| 6 | 風險/疑慮 | 法律、財務、合規 |
+| 7 | 關係動態 | 態度轉變、政治考量（不寫書面） |
+| 8 | 隱含需求 | 弦外之音、未說出的期望 |
 
 **8b — 參與者角色判定**
 
-推斷：內部成員 / 外部客戶 / 外部夥伴 / 決策層 / 法務 / 財務 / 工程師 / 以角色判定
+推斷：內部成員 / 外部客戶 / 外部夥伴 / 決策層 / 法務
 也識別：未出席但被提及 → 需要同步資訊的利害關係人
 
 **8c — 三層優先級清單**
@@ -288,7 +326,6 @@ Guard：確認 `{output_dir}/meeting-notes.md` 存在且使用者已確認 revie
 使用者選好編號後，同時處理（parallel agents 若可用，否則依序）。
 
 每完成一份：
-
 1. 存入 `{output_dir}/drafts/{NN}-{channel}-{recipient}.md`
 2. 自動開啟（open / start / xdg-open）
 3. 對話告知：「✅ [N/M] 草稿已存至 drafts/NN-xxx.md，已開啟。要修改嗎？」
@@ -301,19 +338,20 @@ Guard：確認 `{output_dir}/meeting-notes.md` 存在且使用者已確認 revie
 
 不顯示技術錯誤訊息。遇到問題：「好像遇到問題了，[一句話說明] + [建議做法]」
 
-| 狀況             | 說法                                                                     |
-| ---------------- | ------------------------------------------------------------------------ |
-| 音檔無法讀取     | 「錄音檔好像開不了，可以確認是 .m4a 或 .mp3 嗎？」                       |
-| 轉錄腳本無輸出   | 「語音辨識好像沒有跑起來，要我重試一次嗎？」                             |
-| OCR 全部失敗     | 「圖片辨識遇到問題，我改用另一種方式分析。」→ fallback 到 Claude vision |
-| 沒有網路（Groq） | 「好像連不上辨識服務，要改用本地方式嗎？」                               |
+| 狀況 | 說法 |
+|------|------|
+| 音檔無法讀取 | 「錄音檔好像開不了，可以確認是 .m4a 或 .mp3 嗎？」 |
+| Groq 暫時失敗（429 / 網路抖動） | 腳本自動 retry（最多 3 次，自動等待），不需要打擾使用者 |
+| Groq retry 後仍失敗 → 切換 fallback | 腳本自動切換，印出「切換到 fallback」後繼續跑 |
+| 所有語音辨識方式都失敗 | 腳本顯示互動提示 `[r] 重試 / [s] 跳過 / [q] 結束`，Claude 翻譯為：「語音辨識都試過了，可能是金鑰問題或網路問題。要重試、跳過這個檔案，還是先停下來？」 |
+| OCR 全部失敗 | 「圖片辨識遇到問題，我改用另一種方式分析。」→ fallback 到 Claude vision |
+| Groq 認證失敗（401） | 「金鑰好像有問題，可以重新確認一下嗎？」（這種錯誤不會自動 retry） |
 
 ---
 
 ## UX 語言規則（全程適用）
 
 禁止出現的詞 → 改用的說法：
-
 - "backend" → "語音辨識方式"
 - "API key" → "金鑰"
 - "file path" → "把檔案拖進來，或告訴我在哪"
@@ -325,11 +363,11 @@ Guard：確認 `{output_dir}/meeting-notes.md` 存在且使用者已確認 revie
 
 ## 安全閥（不可違反）
 
-| 永遠做                                 | 永遠不做                    |
-| -------------------------------------- | --------------------------- |
-| ✅ 主動識別所有可能的 follow-up        | ❌ 自動發送任何外部通訊     |
-| ✅ 提供完整清單讓使用者選擇            | ❌ 跳過確認直接執行         |
-| ✅ 草稿存成檔案後自動開啟              | ❌ 一口氣把所有草稿全部輸出 |
-| ✅ 標記敏感內容                        | ❌ 在非授權管道透露敏感資訊 |
-| ✅ 轉錄完成後自動開啟 meeting-notes.md | ❌ 只印路徑讓使用者自己找   |
-| ✅ Step 間保存 progress.json           | ❌ 中斷後重複執行已完成步驟 |
+| 永遠做 | 永遠不做 |
+|--------|---------|
+| ✅ 主動識別所有可能的 follow-up | ❌ 自動發送任何外部通訊 |
+| ✅ 提供完整清單讓使用者選擇 | ❌ 跳過確認直接執行 |
+| ✅ 草稿存成檔案後自動開啟 | ❌ 一口氣把所有草稿全部輸出 |
+| ✅ 標記敏感內容 | ❌ 在非授權管道透露敏感資訊 |
+| ✅ 轉錄完成後自動開啟 meeting-notes.md | ❌ 只印路徑讓使用者自己找 |
+| ✅ Step 間保存 progress.json | ❌ 中斷後重複執行已完成步驟 |
